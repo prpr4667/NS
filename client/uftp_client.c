@@ -44,7 +44,7 @@ char* getPacketContents(char *file, int increment, char packetContents[PACKET_SI
 	if (startIndex == 0) 
 		endIndex = PACKET_SIZE;
 	else 
-		endIndex = startIndex * 2;
+		endIndex = startIndex + PACKET_SIZE;
 	for (int i = startIndex; i < endIndex; i+=1) {
 		packetContents[j] = file[i];
 		j+=1;
@@ -52,26 +52,24 @@ char* getPacketContents(char *file, int increment, char packetContents[PACKET_SI
 	return packetContents;
 }
 
-char* getTimeStamp(char tvalue[256]) {
+void getTimeStamp(char* tvalue) {
 	time_t seconds;
     seconds = time(NULL);
     sprintf(tvalue, "%ld", seconds);
-	return tvalue;
 }
 
-char* getFileExtension(char filename[100], char extension[10]) {
+void getFileExtension(char filename[100], char extension[10]) {
 	int dotIndex = 0, i, j = 0;
 	for (i = 0; i < strlen(filename); i++) {
 		if (filename[i] == '.') {
 			dotIndex = i;
 		}
 	}
-	printf("%d", dotIndex);
 	for (i = dotIndex; i < strlen(filename); i++) {
 		extension[j] = filename[i];
 		j++;
 	}
-	return extension;
+	extension[j] = '\0';
 }
 
 
@@ -85,8 +83,8 @@ int main(int argc, char **argv) {
 	// char *buf = (char*)malloc(BUFSIZE);
 	char msg[PACKET_SIZE];
 	char *file = NULL;  /* declare a pointer, and initialize to NULL */
-	file = malloc (1048576 * sizeof *file);
-	char *msgId;
+	// max file receivable is 500MB
+	file = malloc (504857600);
 	char serverResponse[BUFSIZE];
 	FILE *fp;
 	char ch;
@@ -94,14 +92,15 @@ int main(int argc, char **argv) {
 	char *fname;
 	char filename[100], extension[10];
 	char *newFilename;
-	char timestamp[256];
+	newFilename = malloc(500);
+	char *timestamp;
+	timestamp = malloc(500);
 	char *command;
     struct Packet packet;
 	int sequenceNumber = 0;
 	char *packetContents;
 	packetContents = malloc (PACKET_SIZE * sizeof(char));
 	int relatedPacketsCount = 0;
-	int writtenBytes = 0;
 	int fileSize = 0;
 	int commandValidity = 1, sendPacketCount = 0;
 
@@ -137,6 +136,7 @@ int main(int argc, char **argv) {
 	// printf("Please enter msg: ");
 	while(1) {
 		bzero(buf, BUFSIZE);
+		// take input command from user
 		printf("Type a command \n 1. Get <File name>, 2. Put <File name>, 3. Delete <File name>, 4. List, 5. Exit \n");
 		fgets(buf, BUFSIZE, stdin);
 		command = strtok(buf, " ");
@@ -144,6 +144,8 @@ int main(int argc, char **argv) {
 		sequenceNumber += 1;
 		packet.seq_number = sequenceNumber;
 		packet.msgType = NEW;
+
+		// read the file name from the input
 		if (fname != NULL) {
 			for (i = 0; i < strlen(fname); i++) {
 				if (!(fname[i] == '\n')) {
@@ -153,40 +155,45 @@ int main(int argc, char **argv) {
 		}
 		filename[i] = '\0';
 		if (strcmp(command, "Put") == 0) {
+			// read the contents of the file into a buffer
 			fp = fopen(filename, "r");
 			if (fp == NULL) {
-				printf("Invalid file \n");
+				printf("Invalid file, give full path to file. eg: Put ./client/test.txt \n");
 				continue;
 			}
 			i=0;
-			do {
-				ch = fgetc(fp);
-				file[i] = ch;
-				i++;
-			} while (ch != EOF);
+			fseek(fp, 0, SEEK_END);
+			long fsize = ftell(fp);
+			fseek(fp, 0, SEEK_SET);
+			char *file = malloc(fsize + 1);
+			fread(file, fsize, 1, fp);
+			fclose(fp);
+			file[fsize] = 0;
 			packet.command = (int)PUT;
-            fileSize = i * sizeof(char);
+			// calculate the number of packets to be sent
 			sendPacketCount = 1;
-			if (fileSize > PACKET_SIZE) {
-				sendPacketCount = (int)(fileSize / PACKET_SIZE);
-				if ((PACKET_SIZE * sendPacketCount) < fileSize) {
+			if (fsize > PACKET_SIZE) {
+				sendPacketCount = (int)(fsize / PACKET_SIZE);
+				if ((PACKET_SIZE * sendPacketCount) < fsize) {
 					sendPacketCount += 1;
 				}
 			}
 			i=0;
-			strcpy(packet.packetContents, getPacketContents(file, i, packetContents));
+			// copy first packet contents
+			memcpy(packet.packetContents, getPacketContents(file, i, packetContents), PACKET_SIZE);
 			sequenceNumber += 1;
 			packet.seq_number = sequenceNumber;
 			packet.command = PUT;
 			packet.msgType = NEW;
 			packet.relatedPacketsCount = sendPacketCount;
-			packet.fileSize = fileSize;
+			packet.fileSize = fsize;
 			strncpy(packet.filename, filename, strlen(filename));
 			printf("----------------------------------------------------- \n");
 			printf("Sending first packet - seqNo: %d, total packet count: %d \n", packet.seq_number, packet.relatedPacketsCount);
 			n = sendto(sockfd, &packet, sizeof(struct Packet), 0, 
 				(struct sockaddr *) &serveraddr, serverlen);
 			if (sendPacketCount == 1) {
+				// if only 1 packet to be sent, then wait for the ACK
 				recvfrom(sockfd, &packet, sizeof(struct Packet), 0,
 						(struct sockaddr *) &serveraddr, &serverlen);
 				if (packet.msgType == ACK) {
@@ -194,20 +201,25 @@ int main(int argc, char **argv) {
 					continue;
 				}
 			} else {
+				// if more than 1 packet to be sent, then follow send and wait protocol
 				while(currentPacketCount != sendPacketCount) {
+					// receive the most recent packet's ACK
 					n = recvfrom(sockfd, &packet, sizeof(struct Packet), 0,
 						(struct sockaddr *) &serveraddr, &serverlen);
 					if (n < 0) {
+						// if ACK receive timed out then resend the previous packet 
 						printf("----------------------------------------------------- \n");
 						printf("Packet not received after timeout, sending seqNo: %d again \n", packet.seq_number);
 						n = sendto(sockfd, &packet, sizeof(packet), 0, 
 							(struct sockaddr *) &serveraddr, serverlen);
 					}
+					// if ACK of that packet is received then send next paket
 					else if (packet.msgType == ACK) {
 						printf("----------------------------------------------------- \n");
 						printf("Received ACK for Packet seqNo: %d \n", packet.seq_number);
 						currentPacketCount += 1; sequenceNumber += 1, i += 1;
-						strcpy(packet.packetContents, getPacketContents(file, i, packetContents));
+						// get packet contents in increments of PACKET_SIZE
+						memcpy(packet.packetContents, getPacketContents(file, i, packetContents), PACKET_SIZE);
 						packet.seq_number = sequenceNumber;
 						packet.command = PUT;
 						packet.msgType = NEW;
@@ -241,48 +253,61 @@ int main(int argc, char **argv) {
 			printf("Command  not recognized, please enter valid command \n");
 		}
 		if (commandValidity == 1) {
+			// send the command to server
 			n = sendto(sockfd, &packet, sizeof(struct Packet), 0, (struct sockaddr *)&serveraddr, serverlen);
 			if (n < 0)
 				printf("error in send \n");
+			// receive the response
 			n = recvfrom(sockfd, &packet, sizeof(packet), 0, (struct sockaddr *)&serveraddr, &serverlen);
 			printf("Received command: %d \n", packet.command);
 			if (n < 0) 
 				error("Error in receive \n");
 			if (packet.msgType == NEW) {
 				sequenceNumber += 1;
+				// if received response for GET request, prepare to receive a FILE
 				if (packet.command == GET) {
+					// number of continous packets of same type
 					relatedPacketsCount = packet.relatedPacketsCount;
 					fileSize = packet.fileSize;
 					i = 0, currentPacketCount = 1;
 					memset(file, 0, sizeof file);
 					printf("----------------------------------------------------- \n");
 					printf("Received Packet seqNo: %d \n\n", packet.seq_number);
-					memcpy(file + (i * PACKET_SIZE), packet.packetContents, PACKET_SIZE * sizeof(char));
+					// COPY contents from first packet
+					memcpy(file + (i * PACKET_SIZE), packet.packetContents, PACKET_SIZE);
 					packet.command = GET;
 					packet.msgType = ACK;
 					bzero(packet.packetContents, PACKET_SIZE);
-					// strcpy(packet.packetContents, NULL);
 					printf("Sending ACK for seqNo: %d \n", packet.seq_number);
 					n = sendto(sockfd, &packet, sizeof(struct Packet), 0, (struct sockaddr *)&serveraddr, serverlen);
 					i += 1; currentPacketCount += 1;
+					// recursively keep receiving following packets if many more
 					while(currentPacketCount <= relatedPacketsCount) {
 						n = recvfrom(sockfd, &packet, sizeof(packet), 0, (struct sockaddr *)&serveraddr, &serverlen);
-						packet.seq_number = sequenceNumber;
-						packet.command = GET;
-						packet.msgType = ACK;
-						bzero(packet.packetContents, PACKET_SIZE);
-						// strcpy(packet.packetContents, NULL);
-						printf("----------------------------------------------------- \n");
-						printf("Received Packet seqNo: %d \n\n", packet.seq_number);
-						memcpy(file + (i * PACKET_SIZE), packet.packetContents, PACKET_SIZE * sizeof(char));
-						printf("Sending ACK for seqNo: %d \n", packet.seq_number);
-						n = sendto(sockfd, &packet, sizeof(struct Packet), 0, (struct sockaddr *)&serveraddr, serverlen);
-						i += 1; sequenceNumber += 1; currentPacketCount += 1;
+						if (packet.seq_number == sequenceNumber + 1) {
+							packet.seq_number = sequenceNumber;
+							packet.command = GET;
+							packet.msgType = ACK;
+							memcpy(file + (i * PACKET_SIZE), packet.packetContents, PACKET_SIZE);
+							bzero(packet.packetContents, PACKET_SIZE);
+							printf("----------------------------------------------------- \n");
+							printf("Received Packet seqNo: %d \n\n", packet.seq_number);
+							// keep copying the packet contents to a file buffer
+							printf("Sending ACK for seqNo: %d \n", packet.seq_number);
+							n = sendto(sockfd, &packet, sizeof(struct Packet), 0, (struct sockaddr *)&serveraddr, serverlen);
+							i += 1; sequenceNumber += 1; currentPacketCount += 1;
+						}
+						else {
+							printf("Received an out of order packet, dropping it \n");
+						}
 					}
 					// create the file
 					printf("Full file received \n\n");
-					strcat(newFilename, getTimeStamp(timestamp));
-					strcat(newFilename, getFileExtension(filename, extension));
+					// create the file with the received contents
+					getTimeStamp(timestamp);
+					getFileExtension(filename, extension);
+					strcat(newFilename, timestamp);
+					strcat(newFilename, extension);
 					printf("New file created: %s \n", newFilename);
 					fp = fopen(newFilename, "w");
 					if (fp == NULL) {

@@ -1,7 +1,7 @@
-//
-// Created by Pratik P R
-//
-
+/*
+ * udpclient.c - A simple UDP client
+ * usage: udpclient <host> <port>
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,7 +13,7 @@
 #include <time.h>
 
 #define BUFSIZE 4096
-#define PKT_SIZE 10240
+#define PKT_SIZE 8192
 enum msgTypes { NEW, ACK };
 enum commands { GET, PUT, DELETE, LIST, MSG };
 struct Packet {
@@ -43,7 +43,8 @@ char* add_to_packet(char *file, int increment, char packetContents[PKT_SIZE]) {
 		endIndex = PKT_SIZE;
 	else
 		endIndex = startIndex + PKT_SIZE;
-	for (int i = startIndex; i < endIndex; i+=1) {
+	int i;
+	for (i = startIndex; i < endIndex; i+=1) {
 		packetContents[j] = file[i];
 		j+=1;
 	}
@@ -143,11 +144,11 @@ int main(int argc, char **argv) {
 	while(1) {
 		bzero(buf, BUFSIZE);
 		// take input command from user
-		printf("\n\nType a command \nget [file_name] \nput [file_name]\ndelete [file_name]\nls \nexit \n");
+		printf("Type a command \nget [file_name] \nput [file_name]\ndelete [file_name]\nls \nexit \n");
 		fgets(buf, BUFSIZE, stdin);
 		command = strtok(buf, " ");
 		fname = strtok(NULL, " ");
-		sequence_number += 1;
+		// sequence_number += 1;
 		packet.sequence_number = sequence_number;
 		packet.type = NEW;
 
@@ -164,10 +165,11 @@ int main(int argc, char **argv) {
 			// read the contents of the file into a buffer
 			fp = fopen(filename, "r");
 			if (fp == NULL) {
-				printf("File not found\n");
+				printf("Invalid file, give full path to file. eg: Put ./client/test.txt \n");
 				continue;
 			}
 			i=0;
+			fseek(fp, 0, SEEK_END);
 			long fsize = ftell(fp);
 			fseek(fp, 0, SEEK_SET);
 			char *file = malloc(fsize + 1);
@@ -182,6 +184,7 @@ int main(int argc, char **argv) {
 				if ((PKT_SIZE * packets_sent) < fsize) {
 					packets_sent += 1;
 				}
+				printf("\nPackets to be sent = %d\n", packets_sent);
 			}
 			i=0;
 			// copy first packet contents
@@ -203,7 +206,7 @@ int main(int argc, char **argv) {
 					continue;
 				}
 			} else {
-				while(current_count != packets_sent) {
+				while(current_count <= packets_sent) {
 					// wait for all subsequent ACKs from client
 					n = recvfrom(sockfd, &packet, sizeof(struct Packet), 0,
 								 (struct sockaddr *) &serveraddr, &serverlen);
@@ -216,11 +219,14 @@ int main(int argc, char **argv) {
 						// start sending packets after receiving prev ACK; n = 1
 					else if (packet.type == ACK) {
 						printf("\n ACK received for %d \n", packet.sequence_number);
+
 						current_count += 1; sequence_number += 1, i += 1;
 						// get packet contents in increments of PACKET_SIZE
 						memcpy(packet.packet_content, add_to_packet(file, i, packetContents), PKT_SIZE);
 						set_packet_data(&packet, sequence_number, NEW, PUT);
 						printf("\nSending packet %d \n", packet.sequence_number);
+						if(current_count >= packets_sent)
+							break;
 						n = sendto(sockfd, &packet, sizeof(packet), 0,
 								   (struct sockaddr *) &serveraddr, serverlen);
 					} else {
@@ -231,6 +237,7 @@ int main(int argc, char **argv) {
 		}
 		else if (strcmp(command, "get") == 0) {
 			packet.prompt = (int)GET;
+			printf("\n In the get block %d\n", (int)GET);
 			strcpy(packet.filename, filename);
 		}
 		else if (strcmp(command, "delete") == 0) {
@@ -240,7 +247,7 @@ int main(int argc, char **argv) {
 		else if (strcmp(command, "ls\n") == 0) {
 			packet.prompt = (int)LIST;
 		}
-		else if (strcmp(command, "exit\n") == 0) {
+		else if (strcmp(buf, "exit\n") == 0) {
 			printf("Exiting...\n");
 			return 0;
 		}
@@ -280,6 +287,7 @@ int main(int argc, char **argv) {
 					// recursively keep receiving following packets if many more
 					while(current_count <= total_packets_in_file) {
 						n = recvfrom(sockfd, &packet, sizeof(packet), 0, (struct sockaddr *)&serveraddr, &serverlen);
+						printf("\nPacket sequence number %d, sequence number %d\n", packet.sequence_number, sequence_number);
 						if (packet.sequence_number == sequence_number + 1) {
 							set_packet_data(&packet, sequence_number, ACK, GET);
 							memcpy(file + (i * PKT_SIZE), packet.packet_content, PKT_SIZE);
@@ -316,8 +324,9 @@ int main(int argc, char **argv) {
 					fclose(fp);
 				}
 				else if (packet.prompt == LIST) {
-					printf("\n Listing files:\n");
+					printf("--------------------Files on server--------------------\n");
 					printf("%s \n", packet.packet_content);
+					printf("--------------------END--------------------\n");
 					packet.type = ACK;
 					bzero(packet.packet_content, PKT_SIZE);
 					n = sendto(sockfd, &packet, sizeof(struct Packet), 0, (struct sockaddr *)&serveraddr, serverlen);

@@ -1,6 +1,7 @@
-//
-// Created by Pratik P R
-//
+/*
+ * udpserver.c - A simple UDP echo server
+ * usage: udpserver <port>
+ */
 
 #include <stdio.h>
 #include <unistd.h>
@@ -17,7 +18,7 @@
 #include <time.h>
 
 #define BUFSIZE 4096
-#define PKT_SIZE 10240
+#define PKT_SIZE 8192
 enum msgTypes { NEW, ACK };
 enum commands { GET, PUT, DELETE, LIST, MSG };
 
@@ -44,9 +45,9 @@ void error(char *msg) {
 char* add_to_packet(char *file, int packet_offset, char packet[PKT_SIZE]) {
 	int start = packet_offset * PKT_SIZE;
 	int end = start + PKT_SIZE;
-
+	int i;
 	// write file content to packet
-	for (int i = start; i < end; i += 1) {
+	for (i = start; i < end; i += 1) {
 		packet[i-start] = file[i];
 	}
 	return packet;
@@ -187,7 +188,7 @@ int main(int argc, char **argv) {
 					//file found
 					// read entire file into a buffer
 				else {
-//					fseek(fp, 0, SEEK_END);
+					fseek(fp, 0, SEEK_END);
 					// get size of file in bytes
 					fileSize = ftell(fp);
 					fseek(fp, 0, SEEK_SET);
@@ -204,6 +205,7 @@ int main(int argc, char **argv) {
 						else
 							packets_sent += 1;
 					}
+					printf("\nPackets to be sent = %d\n", packets_sent);
 					i=0;
 					// first packet
 					memcpy(packet.packet_content, add_to_packet(file, i, packet_content), PKT_SIZE);
@@ -222,7 +224,7 @@ int main(int argc, char **argv) {
 							printf("Transfer complete...");
 						}
 					} else {
-						while(current_count != packets_sent) {
+						while(current_count <= packets_sent) {
 							// wait for all subsequent ACKs from client
 							n = recvfrom(sockfd, &packet, sizeof(struct Packet), 0,
 										 (struct sockaddr *) &clientaddr, &clientlen);
@@ -236,6 +238,8 @@ int main(int argc, char **argv) {
 								// start sending packets after receiving prev ACK; n = 1
 							else if (packet.type == ACK) {
 								printf("\n ACK received for %d \n", packet.sequence_number);
+								// if(current_count >= packets_sent-1)
+								// 	break;
 								current_count += 1;
 								sequence_number += 1;
 								i += 1;
@@ -273,13 +277,16 @@ int main(int argc, char **argv) {
 				i += 1;
 				current_count += 1;
 				while(current_count < total_packets_in_file) {
+					printf("\nCurrent Count: %d, Total packets: %d\n", current_count, total_packets_in_file);
 					n = recvfrom(sockfd, &packet, sizeof(packet), 0, (struct sockaddr *)&clientaddr, &clientlen);
+					printf("\nReceived Packet %d and current seq no: %d\n", packet.sequence_number, sequence_number);
 					if (packet.sequence_number == sequence_number + 1) {
 						set_packet_data(&packet, sequence_number, ACK, PUT);
-						printf("\nReceived Packet %d\n", packet.sequence_number);
 						memcpy(file + (i * PKT_SIZE), packet.packet_content, PKT_SIZE);
 						bzero(packet.packet_content, PKT_SIZE);
 						printf("ACK for packet: %d \n", packet.sequence_number);
+						if(current_count >= total_packets_in_file)
+							break;
 						n = sendto(sockfd, &packet, sizeof(struct Packet), 0, (struct sockaddr *)&clientaddr, clientlen);
 						i += 1;
 						sequence_number += 1;

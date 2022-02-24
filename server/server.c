@@ -200,8 +200,8 @@ int main(int argc, char **argv) {
 					packets_sent = 1;
 					// calculate number of packets to be sent
 					if (fileSize > PKT_SIZE) {
-						packets_sent = (int)(fsize / PKT_SIZE);
-						if ((PKT_SIZE * packets_sent) < fsize) {
+						packets_sent = (int)(fileSize / PKT_SIZE);
+						if ((PKT_SIZE * packets_sent) < fileSize) {
 							packets_sent += 1;
 						}
 					}
